@@ -33,6 +33,12 @@ const _http = axios.create({
   httpAgent: new http.Agent({ keepAlive: true }),
 });  
 
+const PLAY_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
+  "Referer": "https://www.aowu.tv/",
+  "Origin": "https://www.aowu.tv"
+};
+
 /**
 * 日志工具函数
 */
@@ -386,6 +392,28 @@ const parseAowuPlayPage = async (playUrl) => {
     return null;
   }
 };  
+
+/**
+ * 嗅探播放页，兜底提取真实视频地址
+ */
+const sniffAowuPlay = async (playUrl) => {
+  if (!playUrl) return null;
+  try {
+    logInfo("尝试嗅探播放页", playUrl);
+    const sniffed = await OmniBox.sniffVideo(playUrl);
+    if (sniffed && sniffed.url) {
+      logInfo("嗅探成功", sniffed.url);
+      return {
+        urls: [{ name: "嗅探线路", url: sniffed.url }],
+        parse: 0,
+        header: sniffed.header || { ...PLAY_HEADERS, "Referer": playUrl }
+      };
+    }
+  } catch (error) {
+    logInfo(`嗅探失败: ${error.message}`);
+  }
+  return null;
+};
 
 /**
 * 核心:解析 CMS 字符串为结构化播放源（支持透传参数）
@@ -872,11 +900,7 @@ async function play(params) {
       playResponse = {
         urls: [{ name: "直接播放", url: playUrl }],
         parse: 0,
-        header: {
-          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
-          "Referer": aowuConfig.host + "/",
-          "Origin": aowuConfig.host
-        }
+        header: PLAY_HEADERS
       };
     } else {
       logInfo('需要解析播放页');
@@ -887,23 +911,20 @@ async function play(params) {
         playResponse = {
           urls: [{ name: "极速云", url: realVideoUrl }],
           parse: 0,
-          header: {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
-            "Referer": playUrl,
-            "Origin": aowuConfig.host
-          }
+          header: { ...PLAY_HEADERS, "Referer": playUrl }
         };
       } else {
-        logInfo('未解析出真实地址,返回原始链接');
-        playResponse = {
-          urls: [{ name: "默认", url: playUrl }],
-          parse: 1,
-          header: {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
-            "Referer": aowuConfig.host + "/",
-            "Origin": aowuConfig.host
-          }
-        };
+        const sniffResult = await sniffAowuPlay(playUrl);
+        if (sniffResult) {
+          playResponse = sniffResult;
+        } else {
+          logInfo('未解析出真实地址,返回原始链接');
+          playResponse = {
+            urls: [{ name: "默认", url: playUrl }],
+            parse: 1,
+            header: PLAY_HEADERS
+          };
+        }
       }
     }  
     
@@ -924,10 +945,14 @@ async function play(params) {
     return playResponse;
   } catch (error) {
     logError('播放处理错误', error);
+    const fallbackSniff = await sniffAowuPlay(playId);
+    if (fallbackSniff) {
+      return fallbackSniff;
+    }
     return {
       urls: [{ name: "默认", url: playId }],
       parse: 1,
-      header: aowuConfig.headers
+      header: PLAY_HEADERS
     };
   }
 }  
